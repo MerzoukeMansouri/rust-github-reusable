@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      binary_name:
+        description: "Binary name, e.g. gup or pgit"
+        required: true
+        type: string
+      repo:
+        description: "GitHub repo slug, e.g. MerzoukeMansouri/gup"
+        required: true
+        type: string
+      formula_class:
+        description: "Ruby class name for the Homebrew formula, e.g. Gup"
+        required: true
+        type: string
+      formula_desc:
+        description: "One-line Homebrew formula description"
+        required: true
+        type: string
+      tap_repo:
+        description: "Homebrew tap repo slug"
+        required: false
+        type: string
+        default: "MerzoukeMansouri/homebrew-pgit"
+    secrets:
+      TAP_GITHUB_TOKEN:
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  semantic-release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      published: ${{ steps.release.outputs.new_release_published }}
+      version: ${{ steps.release.outputs.new_release_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cycjimmy/semantic-release-action@v4
+        id: release
+        with:
+          extra_plugins: |
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/exec
+            @semantic-release/git
+            @semantic-release/github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-build:
+    name: Build ${{ matrix.target }}
+    needs: semantic-release
+    if: needs.semantic-release.outputs.published == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.semantic-release.outputs.version }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          BINARY="${{ inputs.binary_name }}"
+          VERSION="v${{ needs.semantic-release.outputs.version }}"
+          ARCHIVE="${BINARY}-${VERSION}-${{ matrix.target }}.tar.gz"
+          cd "target/${{ matrix.target }}/release"
+          tar czf "${ARCHIVE}" "${BINARY}"
+          mv "${ARCHIVE}" "${GITHUB_WORKSPACE}/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.binary_name }}-${{ matrix.target }}
+          path: ${{ inputs.binary_name }}-v${{ needs.semantic-release.outputs.version }}-${{ matrix.target }}.tar.gz
+
+  upload-assets:
+    name: Upload Release Assets
+    needs: [semantic-release, release-build]
+    if: needs.semantic-release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.semantic-release.outputs.version }}
+          files: "*.tar.gz"
+
+  update-tap:
+    name: Update Homebrew Tap
+    needs: [semantic-release, upload-assets]
+    if: needs.semantic-release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.tap_repo }}
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+      - name: Update formula
+        run: |
+          BINARY="${{ inputs.binary_name }}"
+          CLASS="${{ inputs.formula_class }}"
+          DESC="${{ inputs.formula_desc }}"
+          REPO="${{ inputs.repo }}"
+          VERSION="v${{ needs.semantic-release.outputs.version }}"
+          BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+
+          MAC_ARM_SHA=$(curl -sL "${BASE}/${BINARY}-${VERSION}-aarch64-apple-darwin.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+          MAC_X86_SHA=$(curl -sL "${BASE}/${BINARY}-${VERSION}-x86_64-apple-darwin.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+          LINUX_SHA=$(curl -sL "${BASE}/${BINARY}-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+
+          mkdir -p Formula
+          cat > "Formula/${BINARY}.rb" << FORMULA
+          class ${CLASS} < Formula
+            desc "${DESC}"
+            homepage "https://github.com/${REPO}"
+            version "${VERSION#v}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE}/${BINARY}-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${MAC_ARM_SHA}"
+              else
+                url "${BASE}/${BINARY}-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${MAC_X86_SHA}"
+              end
+            end
+
+            on_linux do
+              url "${BASE}/${BINARY}-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+              sha256 "${LINUX_SHA}"
+            end
+
+            def install
+              bin.install "${BINARY}"
+            end
+
+            test do
+              system "#{bin}/${BINARY}", "--help"
+            end
+          end
+          FORMULA
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "Formula/${BINARY}.rb"
+          git commit -m "${BINARY} ${VERSION}"
+          git push
