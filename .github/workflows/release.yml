@@ -23,7 +23,7 @@ on:
         description: "Homebrew tap repo slug"
         required: false
         type: string
-        default: "MerzoukeMansouri/homebrew-pgit"
+        default: "MerzoukeMansouri/homebrew"
     secrets:
       TAP_GITHUB_TOKEN:
         required: true
