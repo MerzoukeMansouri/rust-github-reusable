@@ -27,6 +27,16 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        if: hashFiles('web/package.json') != ''
+        with:
+          node-version: 20
+      - name: Build embedded web UI
+        if: hashFiles('web/package.json') != ''
+        run: |
+          cd web
+          npm ci
+          npm run build
       - run: cargo clippy -- -D warnings
 
   test:
@@ -37,6 +47,16 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        if: hashFiles('web/package.json') != ''
+        with:
+          node-version: 20
+      - name: Build embedded web UI
+        if: hashFiles('web/package.json') != ''
+        run: |
+          cd web
+          npm ci
+          npm run build
       - run: cargo test
 
   build:
@@ -47,4 +67,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        if: hashFiles('web/package.json') != ''
+        with:
+          node-version: 20
+      - name: Build embedded web UI
+        if: hashFiles('web/package.json') != ''
+        run: |
+          cd web
+          npm ci
+          npm run build
       - run: cargo build --release

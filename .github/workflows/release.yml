@@ -83,6 +83,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        if: hashFiles('web/package.json') != ''
+        with:
+          node-version: 20
+      # Some binaries (e.g. cua) embed a built frontend via rust-embed, which
+      # reads web/dist at compile time — build it first when present. No-op
+      # for consumers of this reusable workflow that have no web/ directory.
+      - name: Build embedded web UI
+        if: hashFiles('web/package.json') != ''
+        run: |
+          cd web
+          npm ci
+          npm run build
       - run: cargo build --release --target ${{ matrix.target }}
       - name: Package
         run: |
