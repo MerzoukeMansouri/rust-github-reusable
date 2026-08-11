@@ -24,6 +24,11 @@ on:
         required: false
         type: string
         default: "MerzoukeMansouri/homebrew"
+      build_windows:
+        description: "Also build a x86_64-pc-windows-msvc release asset (not part of the Homebrew formula — Homebrew doesn't run on Windows — just an extra GitHub Release download)"
+        required: false
+        type: boolean
+        default: false
     secrets:
       TAP_GITHUB_TOKEN:
         required: true
@@ -64,15 +69,18 @@ jobs:
     needs: semantic-release
     if: needs.semantic-release.outputs.published == 'true'
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # windows-latest defaults `run:` to pwsh — force bash everywhere so
+        # the Package step's script (and the web-build cd/&&) doesn't need
+        # a second, Windows-specific dialect. Git Bash ships on windows-latest.
+        shell: bash
     strategy:
       matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+        # windows-msvc only appears when inputs.build_windows is true — it's
+        # never part of the Homebrew formula (Homebrew doesn't run on
+        # Windows), so consumers who don't want the extra CI time can skip it.
+        include: ${{ inputs.build_windows && fromJSON('[{"target":"aarch64-apple-darwin","os":"macos-latest"},{"target":"x86_64-apple-darwin","os":"macos-latest"},{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest"},{"target":"x86_64-pc-windows-msvc","os":"windows-latest"}]') || fromJSON('[{"target":"aarch64-apple-darwin","os":"macos-latest"},{"target":"x86_64-apple-darwin","os":"macos-latest"},{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest"}]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -100,10 +108,11 @@ jobs:
       - name: Package
         run: |
           BINARY="${{ inputs.binary_name }}"
+          EXT="${{ matrix.os == 'windows-latest' && '.exe' || '' }}"
           VERSION="v${{ needs.semantic-release.outputs.version }}"
           ARCHIVE="${BINARY}-${VERSION}-${{ matrix.target }}.tar.gz"
           cd "target/${{ matrix.target }}/release"
-          tar czf "${ARCHIVE}" "${BINARY}"
+          tar czf "${ARCHIVE}" "${BINARY}${EXT}"
           mv "${ARCHIVE}" "${GITHUB_WORKSPACE}/"
       - uses: actions/upload-artifact@v7
         with:
